@@ -1,0 +1,8 @@
+# Archived: 009-team-management
+
+**Date:** 2026-09-07
+**Outcome:** deferred
+**Reason:** Saved-team work is intentionally paused. Its Headcount Team
+breakdown conflicts with Spec 010's requirement to remove that UI; future
+saved-team work requires a new, explicit product decision.
+**Original location:** specs/features/009-team-management/

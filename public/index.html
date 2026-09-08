@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>WorkDay Import</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
+      nav { margin-bottom: 1.5rem; }
+      nav a { margin-right: 1rem; text-decoration: none; }
+      nav a[aria-current="page"] { font-weight: 700; text-decoration: underline; }
+      #result { margin-top: 1rem; white-space: pre-wrap; }
+      button { margin-left: 0.5rem; }
+    </style>
+  </head>
+  <body>
+    <!-- Import uses its explicit static-page URL because / is the data-aware
+         landing route and may redirect a returning user to Headcount. -->
+    <nav>
+      <a href="/index.html" aria-current="page">Import</a>
+      <a href="/headcount.html">Headcount</a>
+      <a href="/employee-details.html">Employee Details</a>
+      <a href="/contractors.html">Contractors</a>
+    </nav>
+
+    <h1>Import WorkDay Report</h1>
+    <p>Select the "Team Market Range Analysis for Managers" export and click Import.</p>
+    <input type="file" id="file-input" accept=".xlsx" />
+    <button id="import-button" type="button">Import</button>
+    <button id="confirm-button" type="button" style="display: none">Confirm Import</button>
+    <div id="result"></div>
+
+    <script type="module">
+      const fileInput = document.getElementById("file-input");
+      const importButton = document.getElementById("import-button");
+      const confirmButton = document.getElementById("confirm-button");
+      const resultDiv = document.getElementById("result");
+      let pendingToken = null;
+
+      function showResult(text) {
+        resultDiv.textContent = text;
+      }
+
+      function formatCounts(counts) {
+        return `${counts.added} added, ${counts.updated} updated, ${counts.inactivated} inactivated.`;
+      }
+
+      importButton.addEventListener("click", async () => {
+        const file = fileInput.files[0];
+        if (!file) {
+          showResult("Choose a file first.");
+          return;
+        }
+        confirmButton.style.display = "none";
+        pendingToken = null;
+        showResult("Computing preview...");
+
+        const formData = new FormData();
+        formData.append("file", file);
+
+        // Defense in depth alongside the server's own atomic reservation
+        // (FR-5.2): prevents an impatient double-click from firing a second
+        // /api/preview request while this one is still in flight.
+        importButton.disabled = true;
+        try {
+          const response = await fetch("/api/preview", { method: "POST", body: formData });
+          const body = await response.json();
+          if (!response.ok) {
+            showResult(body.error || `Request failed (${response.status}).`);
+            return;
+          }
+          if (body.outcome === "failure") {
+            showResult(body.error);
+            return;
+          }
+          pendingToken = body.token;
+          showResult(`Preview: ${formatCounts(body.counts)}`);
+          confirmButton.style.display = "inline-block";
+        } catch {
+          showResult("Request failed.");
+        } finally {
+          importButton.disabled = false;
+        }
+      });
+
+      confirmButton.addEventListener("click", async () => {
+        if (!pendingToken) return;
+        confirmButton.style.display = "none";
+        showResult("Importing...");
+
+        try {
+          const response = await fetch("/api/confirm", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token: pendingToken }),
+          });
+          const body = await response.json();
+          pendingToken = null;
+          if (!response.ok || body.outcome === "failure") {
+            showResult(body.error || `Import failed (${response.status}).`);
+            return;
+          }
+          showResult(`Import complete: ${formatCounts(body.counts)}`);
+          // Spec 003 FR-3.6: appended as a DOM node — showResult assigns
+          // textContent, so markup passed through it would render as literal
+          // text, and switching it to innerHTML would undo its XSS safety.
+          const dashboardLink = document.createElement("a");
+          dashboardLink.href = "/headcount.html";
+          dashboardLink.textContent = "View the Headcount dashboard";
+          const dashboard = document.createElement("p");
+          dashboard.append(dashboardLink);
+          resultDiv.append(dashboard);
+        } catch {
+          showResult("Request failed.");
+        }
+      });
+    </script>
+  </body>
+</html>

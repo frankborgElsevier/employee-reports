@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Employee Details</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 70rem; margin: 2rem auto; padding: 0 1rem; }
+      nav { margin-bottom: 1.5rem; }
+      nav a { margin-right: 1rem; text-decoration: none; }
+      nav a[aria-current="page"] { font-weight: 700; text-decoration: underline; }
+      fieldset { margin: 1rem 0; display: inline-block; vertical-align: top; margin-right: 1.5rem; }
+      #filters { margin-bottom: 1rem; }
+      .message { margin: 1rem 0; }
+      table { border-collapse: collapse; width: 100%; }
+      th, td { border: 1px solid rgba(0, 0, 0, 0.2); padding: 0.3rem 0.5rem; text-align: left; }
+      th button { background: none; border: none; font: inherit; font-weight: 700; cursor: pointer; padding: 0; }
+    </style>
+  </head>
+  <body>
+    <!-- FR-4.5: all three nav links on every page; the current one carries aria-current. -->
+    <nav>
+      <a href="/index.html">Import</a>
+      <a href="/headcount.html">Headcount</a>
+      <a href="/employee-details.html" aria-current="page">Employee Details</a>
+      <a href="/contractors.html">Contractors</a>
+    </nav>
+
+    <h1>Employee Details</h1>
+
+    <div id="filters"></div>
+    <div id="message" class="message"></div>
+    <div id="table-container"></div>
+
+    <script type="module">
+      import {
+        PERFORMANCE_CATEGORIES,
+        RATING_PERIODS,
+        distinctPositions,
+        isValidPayload,
+        sortRows,
+        visibleRows,
+      } from "./employeeDetailsLogic.js";
+      import { buildTree, isRoot, managerList } from "./chart-logic.js";
+
+      const filtersDiv = document.getElementById("filters");
+      const messageDiv = document.getElementById("message");
+      const tableContainer = document.getElementById("table-container");
+
+      const COLUMNS = [
+        { key: "id", label: "Employee ID" },
+        { key: "name", label: "Name" },
+        { key: "workerType", label: "Worker Type" },
+        { key: "position", label: "Position" },
+        { key: "currency", label: "Currency" },
+        { key: "baseSalary", label: "Base Salary" },
+        { key: "bonus", label: "Bonus" },
+        { key: "compRatio", label: "Comp Ratio" },
+        { key: "mostRecent", label: "Most Recent Rating" },
+        { key: "priorRating", label: "Prior Rating" },
+        { key: "twoYearPriorRating", label: "Two Year Prior Rating" },
+      ];
+
+      /** AR-1.1: all employee-derived text reaches the DOM through textContent. */
+      function element(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
+      }
+
+      function clear(node) {
+        node.replaceChildren();
+      }
+
+      /**
+       * AR-1.1: a labelled checkbox whose `id`/`for` pair is a caller-supplied,
+       * DOM-safe identifier (never the raw label text itself), set via direct
+       * property assignment rather than template-string interpolation. `value`
+       * and the label's text content carry the untrusted string, both of
+       * which tolerate arbitrary text safely via textContent/property assignment.
+       */
+      function renderCheckbox(domId, value, labelText, checked, onChange) {
+        const wrapper = document.createElement("div");
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.id = domId;
+        box.value = value;
+        box.checked = checked;
+        box.addEventListener("change", () => onChange(box.checked));
+        const label = document.createElement("label");
+        label.htmlFor = domId;
+        label.textContent = labelText;
+        wrapper.append(box, label);
+        return wrapper;
+      }
+
+      function cellText(value) {
+        return value === null ? "—" : String(value);
+      }
+
+      function renderRow(employee) {
+        const tr = document.createElement("tr");
+        const values = [
+          employee.id,
+          employee.name,
+          employee.workerType === "contractor" ? "Contractor" : "Employee",
+          employee.position,
+          employee.currency,
+          employee.baseSalary,
+          employee.bonus,
+          employee.compRatio,
+          employee.ratings.mostRecent,
+          employee.ratings.priorRating,
+          employee.ratings.twoYearPriorRating,
+        ];
+        for (const value of values) {
+          tr.append(element("td", null, cellText(value)));
+        }
+        return tr;
+      }
+
+      /**
+       * FR-3.1: exactly one sortable header carries an active `aria-sort`
+       * state at a time; every other header is `"none"`. The direction is
+       * also shown as a non-colour arrow glyph in the button's own text.
+       */
+      function renderHeaderRow(sortState, onSort) {
+        const tr = document.createElement("tr");
+        for (const column of COLUMNS) {
+          const th = document.createElement("th");
+          const isActive = sortState.column === column.key;
+          th.setAttribute("aria-sort", isActive ? sortState.direction : "none");
+          const button = document.createElement("button");
+          button.type = "button";
+          const arrow = isActive ? (sortState.direction === "ascending" ? " ▲" : " ▼") : "";
+          button.textContent = column.label + arrow;
+          button.addEventListener("click", () => onSort(column.key));
+          th.append(button);
+          tr.append(th);
+        }
+        return tr;
+      }
+
+      function renderTable(rows, sortState, onSort) {
+        clear(tableContainer);
+        const table = document.createElement("table");
+        const thead = document.createElement("thead");
+        thead.append(renderHeaderRow(sortState, onSort));
+        const tbody = document.createElement("tbody");
+        for (const row of rows) {
+          tbody.append(renderRow(row));
+        }
+        table.append(thead, tbody);
+        tableContainer.append(table);
+      }
+
+      function start(employees) {
+        const positions = distinctPositions(employees);
+        const managers = managerList(employees);
+        // spec 006 AR-1.1: computed once per page load, not per refresh --
+        // the set of manager ids that are themselves roots (isRoot()),
+        // threaded into every visibleRows() call below.
+        const { byId } = buildTree(employees);
+        const rootManagerIds = new Set(
+          managers
+            .filter((manager) => isRoot(byId.get(manager.id), byId))
+            .map((manager) => manager.id),
+        );
+        // FR-2.1, FR-2.2: all checked by default.
+        const selectedPositions = new Set(positions);
+        const selectedManagerIds = new Set(managers.map((manager) => manager.id));
+        const selectedRatings = new Set(PERFORMANCE_CATEGORIES);
+        const selectedRatingKeys = new Set(RATING_PERIODS.map(({ key }) => key));
+        // FR-3.1: name ascending, id tie-break, before any header is activated.
+        const sortState = { column: "name", direction: "ascending" };
+
+        function onSort(column) {
+          if (sortState.column === column) {
+            sortState.direction = sortState.direction === "ascending" ? "descending" : "ascending";
+          } else {
+            sortState.column = column;
+            sortState.direction = "ascending";
+          }
+          refresh();
+        }
+
+        function refresh() {
+          const visible = visibleRows(
+            employees,
+            selectedPositions,
+            selectedManagerIds,
+            rootManagerIds,
+            selectedRatings,
+            selectedRatingKeys,
+          );
+          const sorted = sortRows(visible, sortState.column, sortState.direction);
+          renderTable(sorted, sortState, onSort);
+          // FR-2.5: distinct from FR-1.4's never-imported state and FR-4.4's load failure.
+          messageDiv.textContent = sorted.length === 0 ? "No employees match the current filters." : "";
+        }
+
+        clear(filtersDiv);
+
+        const positionFieldset = document.createElement("fieldset");
+        positionFieldset.append(element("legend", null, "Filter by position"));
+        positions.forEach((position, index) => {
+          positionFieldset.append(
+            renderCheckbox(`position-checkbox-${index}`, position, position, true, (checked) => {
+              if (checked) selectedPositions.add(position);
+              else selectedPositions.delete(position);
+              refresh();
+            }),
+          );
+        });
+        filtersDiv.append(positionFieldset);
+
+        const ratingFieldset = document.createElement("fieldset");
+        ratingFieldset.append(element("legend", null, "Filter by performance rating"));
+        PERFORMANCE_CATEGORIES.forEach((rating, index) => {
+          ratingFieldset.append(
+            renderCheckbox(`performance-rating-checkbox-${index}`, rating, rating, true, (checked) => {
+              if (checked) selectedRatings.add(rating);
+              else selectedRatings.delete(rating);
+              refresh();
+            }),
+          );
+        });
+        filtersDiv.append(ratingFieldset);
+
+        const recencyFieldset = document.createElement("fieldset");
+        recencyFieldset.append(element("legend", null, "Filter by rating recency"));
+        RATING_PERIODS.forEach(({ key, label }, index) => {
+          recencyFieldset.append(
+            renderCheckbox(`rating-recency-checkbox-${index}`, key, label, true, (checked) => {
+              if (checked) selectedRatingKeys.add(key);
+              else selectedRatingKeys.delete(key);
+              refresh();
+            }),
+          );
+        });
+        filtersDiv.append(recencyFieldset);
+
+        // FR-2.2: the fieldset is omitted entirely when nobody has reports.
+        if (managers.length > 0) {
+          const managerFieldset = document.createElement("fieldset");
+          managerFieldset.append(element("legend", null, "Filter by manager"));
+          for (const manager of managers) {
+            managerFieldset.append(
+              renderCheckbox(`manager-checkbox-${manager.id}`, manager.id, manager.label, true, (checked) => {
+                if (checked) selectedManagerIds.add(manager.id);
+                else selectedManagerIds.delete(manager.id);
+                refresh();
+              }),
+            );
+          }
+          filtersDiv.append(managerFieldset);
+        }
+
+        refresh();
+      }
+
+      /** FR-1.4: never-imported/all-inactive is a distinct state from FR-4.4's load failure. */
+      function renderEmptyState() {
+        messageDiv.append(
+          element("span", null, "No employee data yet — "),
+          Object.assign(document.createElement("a"), {
+            href: "/",
+            textContent: "import a WorkDay report to get started.",
+          }),
+        );
+      }
+
+      try {
+        const response = await fetch("/api/employee-details");
+        if (!response.ok) throw new Error(`Request failed (${response.status}).`);
+        const body = await response.json();
+        // FR-4.4: a syntactically-valid but incomplete body is treated
+        // identically to a network/parse error, not rendered partially.
+        if (!isValidPayload(body)) throw new Error("Malformed response body.");
+        if (body.employees.length === 0) renderEmptyState();
+        else start(body.employees);
+      } catch {
+        // FR-4.4: one message for every failure cause; filters and table are
+        // cleared so no stale or partially-derived state remains on screen.
+        clear(filtersDiv);
+        clear(tableContainer);
+        messageDiv.textContent = "Could not load employee data. Reload the page to try again.";
+      }
+    </script>
+  </body>
+</html>

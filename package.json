@@ -1,0 +1,33 @@
+{
+  "name": "employee-reports",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WorkDay reporting dashboard app: SQLite data foundation and dashboards.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node --import tsx src/server/start.ts",
+    "test": "node --import tsx --test test/**/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "exceljs": "^4.4.0",
+    "express": "^5.2.1",
+    "multer": "^2.3.0",
+    "open": "^11.0.2",
+    "yauzl": "^3.4.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.2.0",
+    "@types/node": "^26.4.0",
+    "@types/yauzl": "^3.4.0",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2"
+  }
+}

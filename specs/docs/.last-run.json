@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 3,
+  "timestamp": "2026-09-08T10:20:42Z",
+  "mode": "close-update",
+  "focus": "013-git-sharing-and-local-run-guide",
+  "gitHead": null,
+  "evidenceFiles": [
+    ".gitignore",
+    "README.md",
+    "package.json",
+    "src/server/start.ts",
+    "specs/features/013-git-sharing-and-local-run-guide/spec.md",
+    "specs/features/013-git-sharing-and-local-run-guide/implementation-summary.md",
+    "specs/features/013-git-sharing-and-local-run-guide/implementation-review.md",
+    "specs/features/013-git-sharing-and-local-run-guide/ADR.md",
+    "specs/docs/conventions/repository-sharing.md",
+    "specs/docs/spec-index.md",
+    "specs/docs/.last-run.json"
+  ],
+  "docsUpdated": [
+    "specs/docs/conventions/index.md",
+    "specs/docs/conventions/repository-sharing.md",
+    "specs/docs/spec-index.md",
+    "specs/docs/.last-run.json"
+  ],
+  "specsLinked": [
+    "013-git-sharing-and-local-run-guide"
+  ],
+  "notes": "Closed the implemented local Git-sharing and setup-guide spec. The repository-sharing convention records the protected local-data boundary, staged-file audit, and loopback-only local setup path.",
+  "skippedFollowUps": []
+}

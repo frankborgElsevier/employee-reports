@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Contractors</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 70rem; margin: 2rem auto; padding: 0 1rem; }
+      nav { margin-bottom: 1.5rem; } nav a { margin-right: 1rem; text-decoration: none; } nav a[aria-current="page"] { font-weight: 700; text-decoration: underline; }
+      form { max-width: 34rem; } label { display: block; font-weight: 600; margin-top: 1rem; } input, select { box-sizing: border-box; display: block; font: inherit; margin-top: .25rem; padding: .4rem; width: 100%; } button { font: inherit; margin: .5rem .35rem .5rem 0; padding: .4rem .8rem; }
+      .message { margin: 1rem 0; } .help { color: #444; margin: .35rem 0; } .error { color: #a40000; } .actions { white-space: nowrap; } .inline-form { border-top: 1px solid #bbb; padding: .25rem 0 .75rem; }
+      .table-wrap { overflow-x: auto; } table { border-collapse: collapse; width: 100%; } th, td { border: 1px solid #bbb; padding: .5rem; text-align: left; vertical-align: top; } dialog { max-width: 32rem; } dialog::backdrop { background: rgb(0 0 0 / 35%); }
+    </style>
+  </head>
+  <body>
+    <nav><a href="/index.html">Import</a><a href="/headcount.html">Headcount</a><a href="/employee-details.html">Employee Details</a><a href="/contractors.html" aria-current="page">Contractors</a></nav>
+    <h1>Contractors</h1>
+    <p>Add people who do not appear in WorkDay. Select a line manager by name; the application keeps the manager relationship automatically.</p>
+    <div id="message" class="message" aria-live="polite"></div>
+    <form id="contractor-form">
+      <h2>Add contractor</h2>
+      <label>Name * <input name="name" required autocomplete="name" /></label>
+      <label>Position * <select name="position" id="position" required disabled><option value="">Select a position</option></select></label>
+      <label>Country * <input name="country" required /></label>
+      <label>Line manager (optional) <select name="managerId" id="manager-id" disabled><option value="">No manager</option></select></label>
+      <p id="manager-help" class="help"></p><button type="submit" disabled>Add contractor</button>
+    </form>
+    <h2>Active contractors</h2><div id="contractor-list" class="table-wrap" aria-live="polite"></div>
+    <dialog id="delete-dialog" aria-labelledby="delete-title">
+      <h2 id="delete-title">Delete contractor?</h2><p id="delete-text"></p>
+      <p>This removal is permanent. The contractor will be removed from Contractors, Headcount, and Employee Details.</p>
+      <form method="dialog"><button value="cancel">Cancel</button><button id="delete-confirm" type="button">Delete contractor</button></form><p id="delete-message" class="message" aria-live="polite"></p>
+    </dialog>
+    <script type="module">
+      import { contractorDetailsRequestFromForm, contractorManagerRequestFromForm, contractorRequestFromForm, isCreatedContractor, isValidContractorList, isValidManagerOptions, managerChoices } from "./contractorLogic.js";
+      const form = document.getElementById("contractor-form"), managerSelect = document.getElementById("manager-id"), positionSelect = document.getElementById("position"), submit = form.querySelector("button[type=submit]"), message = document.getElementById("message"), managerHelp = document.getElementById("manager-help"), contractorList = document.getElementById("contractor-list"), deleteDialog = document.getElementById("delete-dialog"), deleteText = document.getElementById("delete-text"), deleteMessage = document.getElementById("delete-message"), deleteConfirm = document.getElementById("delete-confirm");
+      let choices = [], managerOptions = [], deletingContractor = null;
+      const setMessage = (text) => { message.textContent = text; };
+      const addText = (parent, tag, text) => { const el = document.createElement(tag); el.textContent = text; parent.append(el); return el; };
+      const appendOption = (select, value, label, disabled = false) => { const option = document.createElement("option"); option.value = value; option.textContent = label; option.disabled = disabled; select.append(option); };
+      const managerName = (manager) => manager ? manager.name : "No manager";
+      const errorText = (body, fallback) => typeof body?.error === "string" ? body.error : fallback;
+      async function responseBody(response) { try { return await response.json(); } catch { return null; } }
+      function populateManagerSelect(select, currentManager = null) { const displayedChoices = currentManager ? managerChoices(managerOptions, currentManager) : choices; select.replaceChildren(); appendOption(select, "", "No manager"); for (const choice of displayedChoices) appendOption(select, choice.id, choice.label, !choice.available); if (currentManager) select.value = currentManager.id; }
+      function showManagerHelp() { managerHelp.textContent = choices.some((choice) => choice.unresolved) ? "Two imported managers cannot be distinguished by the available name, position, and country. Import corrected people data, then choose the manager." : ""; }
+      function renderContractors(contractors) {
+        contractorList.replaceChildren(); if (!contractors.length) { addText(contractorList, "p", "No active contractors."); return; }
+        const table = document.createElement("table"), caption = document.createElement("caption"), thead = document.createElement("thead"), headRow = document.createElement("tr"), tbody = document.createElement("tbody"); caption.textContent = "Active contractors"; table.append(caption);
+        for (const heading of ["Contractor", "Position", "Country", "Line manager", "Actions"]) { const th = addText(headRow, "th", heading); th.scope = "col"; } thead.append(headRow); table.append(thead);
+        for (const contractor of contractors) tbody.append(renderContractorRow(contractor)); table.append(tbody); contractorList.append(table);
+      }
+      function renderContractorRow(contractor) {
+        const row = document.createElement("tr"); addText(row, "td", contractor.name); addText(row, "td", contractor.position); addText(row, "td", contractor.country); addText(row, "td", managerName(contractor.manager));
+        const actions = document.createElement("td"); actions.className = "actions";
+        for (const [label, handler] of [["Edit", () => renderEditRow(row, contractor)], ["Set line manager", () => renderManagerRow(row, contractor)], ["Delete", () => openDelete(contractor)]]) { const button = document.createElement("button"); button.type = "button"; button.textContent = label; button.setAttribute("aria-label", `${label} ${contractor.name}`); button.addEventListener("click", handler); actions.append(button); }
+        row.append(actions); return row;
+      }
+      function replacementRow(row) { const replacement = document.createElement("tr"), cell = document.createElement("td"); cell.colSpan = 5; replacement.append(cell); row.replaceWith(replacement); return cell; }
+      function cancelButton() { const button = document.createElement("button"); button.type = "button"; button.textContent = "Cancel"; button.addEventListener("click", loadContractors); return button; }
+      function renderEditRow(row, contractor) {
+        const cell = replacementRow(row), editForm = document.createElement("form"); editForm.className = "inline-form"; addText(editForm, "h3", `Edit ${contractor.name}`);
+        for (const [name, labelText, value] of [["name", "Name", contractor.name], ["position", "Position", contractor.position], ["country", "Country", contractor.country]]) { const label = document.createElement("label"), input = document.createElement("input"); label.textContent = `${labelText} *`; input.name = name; input.value = value; input.required = true; label.append(input); editForm.append(label); }
+        const save = document.createElement("button"), status = addText(editForm, "p", ""); save.type = "submit"; save.textContent = "Save"; status.className = "message"; status.setAttribute("aria-live", "polite"); editForm.append(save, cancelButton(), status);
+        editForm.addEventListener("submit", async (event) => { event.preventDefault(); if (!editForm.reportValidity()) return; save.disabled = true; status.textContent = "Saving…"; const values = new FormData(editForm), request = contractorDetailsRequestFromForm({ name: values.get("name"), position: values.get("position"), country: values.get("country") }); try { const response = await fetch(`/api/contractors/${encodeURIComponent(contractor.id)}/details`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) }), body = await responseBody(response); if (!response.ok || !isCreatedContractor(body)) { status.textContent = errorText(body, "Could not save contractor. Try again."); return; } setMessage(`Contractor ${body.contractor.name} updated.`); await loadContractors(); } catch { status.textContent = "Could not save contractor. Try again."; } finally { save.disabled = false; } });
+        cell.append(editForm); editForm.querySelector("input")?.focus();
+      }
+      function renderManagerRow(row, contractor) {
+        const cell = replacementRow(row), managerForm = document.createElement("form"); managerForm.className = "inline-form"; addText(managerForm, "h3", `Set line manager — ${contractor.name}`); addText(managerForm, "p", `Current manager: ${managerName(contractor.manager)}`);
+        const label = document.createElement("label"), select = document.createElement("select"); label.textContent = "Line manager"; select.name = "managerId"; populateManagerSelect(select, contractor.manager); label.append(select); managerForm.append(label);
+        if (choices.some((choice) => choice.unresolved)) { const note = addText(managerForm, "p", "Two imported managers cannot be distinguished by the available name, position, and country. Import corrected people data, then choose the manager."); note.className = "error"; }
+        const save = document.createElement("button"), status = addText(managerForm, "p", ""); save.type = "submit"; save.textContent = "Save line manager"; status.className = "message"; status.setAttribute("aria-live", "polite"); managerForm.append(save, cancelButton(), status);
+        managerForm.addEventListener("submit", async (event) => { event.preventDefault(); save.disabled = true; status.textContent = "Saving…"; const request = contractorManagerRequestFromForm({ managerId: select.value }); try { const response = await fetch(`/api/contractors/${encodeURIComponent(contractor.id)}/manager`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) }), body = await responseBody(response); if (!response.ok || !isCreatedContractor(body)) { status.textContent = errorText(body, "Could not set line manager. Try again."); return; } setMessage(`Line manager updated for ${body.contractor.name}.`); await loadContractors(); } catch { status.textContent = "Could not set line manager. Try again."; } finally { save.disabled = false; } });
+        cell.append(managerForm); select.focus();
+      }
+      function openDelete(contractor) { deletingContractor = contractor; deleteMessage.textContent = ""; deleteText.textContent = `Delete ${contractor.name}?`; deleteDialog.showModal(); }
+      deleteConfirm.addEventListener("click", async () => { if (!deletingContractor) return; deleteConfirm.disabled = true; deleteMessage.textContent = "Deleting…"; try { const response = await fetch(`/api/contractors/${encodeURIComponent(deletingContractor.id)}`, { method: "DELETE" }), body = await responseBody(response); if (!response.ok) { deleteMessage.textContent = errorText(body, "Could not delete contractor. Try again."); return; } const name = deletingContractor.name; deletingContractor = null; deleteDialog.close(); setMessage(`Contractor ${name} deleted permanently.`); await loadContractors(); } catch { deleteMessage.textContent = "Could not delete contractor. Try again."; } finally { deleteConfirm.disabled = false; } });
+      async function loadManagers() { try { const response = await fetch("/api/contractor-form-options"), body = await responseBody(response); if (!response.ok || !isValidManagerOptions(body)) throw new Error("invalid response"); managerOptions = body.managers; choices = managerChoices(managerOptions); populateManagerSelect(managerSelect); for (const position of body.positions) appendOption(positionSelect, position, position); showManagerHelp(); managerSelect.disabled = false; positionSelect.disabled = false; submit.disabled = false; } catch { setMessage("Could not load manager options. Reload the page to try again."); } }
+      async function loadContractors() { try { const response = await fetch("/api/contractors"), body = await responseBody(response); if (!response.ok || !isValidContractorList(body)) throw new Error("invalid response"); renderContractors(body.contractors); } catch { contractorList.replaceChildren(); addText(contractorList, "p", "Could not load contractors. Reload the page to try again."); } }
+      form.addEventListener("submit", async (event) => { event.preventDefault(); if (!form.reportValidity()) return; submit.disabled = true; const values = new FormData(form), request = contractorRequestFromForm({ name: values.get("name"), position: values.get("position"), country: values.get("country"), managerId: values.get("managerId") }); try { const response = await fetch("/api/contractors", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) }), body = await responseBody(response); if (!response.ok || !isCreatedContractor(body)) { setMessage(errorText(body, "Could not add contractor. Try again.")); return; } form.reset(); setMessage(`Contractor ${body.contractor.name} added.`); await loadContractors(); } catch { setMessage("Could not add contractor. Try again."); } finally { submit.disabled = managerSelect.disabled || positionSelect.disabled; } });
+      await loadManagers(); await loadContractors();
+    </script>
+  </body>
+</html>

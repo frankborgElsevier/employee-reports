@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Headcount Dashboard</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 60rem; margin: 2rem auto; padding: 0 1rem; }
+      nav { margin-bottom: 1.5rem; }
+      nav a { margin-right: 1rem; text-decoration: none; }
+      nav a[aria-current="page"] { font-weight: 700; text-decoration: underline; }
+
+      /* FR-1.7: fixed bucket colours. Card text #1a1a1a on each of these gives
+         WCAG contrast ratios of 13.5:1, 12.9:1, and 14.5:1 — all far above the
+         4.5:1 minimum, so the requirement is checkable rather than asserted. */
+      .card { color: #1a1a1a; border: 1px solid rgba(0, 0, 0, 0.25); border-radius: 0.25rem;
+              padding: 0.4rem 0.6rem; margin: 0.25rem 0; max-width: 22rem; }
+      .card.blue { background: #d6e4f7; }
+      .card.red { background: #f7d6d6; }
+      .card.green { background: #d9f0dc; }
+      .card.contractor { background: #e8def8; }
+      /* FR-2.5 (spec 005): a fixed, distinct look for an external-manager placeholder card. */
+      .card.external { background: #ececec; border: 1px dashed rgba(0, 0, 0, 0.4); }
+      .card .name { font-weight: 600; }
+      .card .position, .card .country, .card .team-size, .card .worker-type { font-size: 0.85rem; }
+      /* FR-1.7: a long country value wraps rather than breaking the card. */
+      .card .country { overflow-wrap: anywhere; }
+
+      /* FR-1.5: each level of nesting is indented inside its manager's box. */
+      .team { margin-left: 1.5rem; border-left: 2px solid #ccc; padding-left: 0.75rem; }
+
+      .legend span { margin-right: 1rem; padding: 0.2rem 0.5rem; border-radius: 0.25rem; color: #1a1a1a; }
+      fieldset { margin: 1rem 0; }
+      #totals table { border-collapse: collapse; }
+      #totals td { padding: 0.1rem 0.75rem 0.1rem 0; }
+      /* spec 006 AR-3.4: dedicated header styling for the position-by-region
+         matrix -- background/text colour only (the same hexes FR-1.7 already
+         fixed), not the `.card` box model, which is sized and bordered for
+         org-chart cards, not table headers. */
+      #totals th { text-align: left; font-weight: 700; padding: 0.1rem 0.75rem 0.1rem 0; }
+      .region-header.blue { background: #d6e4f7; color: #1a1a1a; }
+      .region-header.red { background: #f7d6d6; color: #1a1a1a; }
+      .region-header.green { background: #d9f0dc; color: #1a1a1a; }
+      .region-header.purple { background: #e8def8; color: #1a1a1a; }
+      .message { margin: 1rem 0; }
+    </style>
+  </head>
+  <body>
+    <!-- FR-3.5: both links on both pages; the current one carries aria-current. -->
+    <nav>
+      <a href="/index.html">Import</a>
+      <a href="/headcount.html" aria-current="page">Headcount</a>
+      <a href="/employee-details.html">Employee Details</a>
+      <a href="/contractors.html">Contractors</a>
+    </nav>
+
+    <h1>Headcount Dashboard</h1>
+
+    <!-- FR-1.7: the legend stays visible even when the data fails to load. -->
+    <p class="legend">
+      <span class="card blue">Blue — UK &amp; US</span>
+      <span class="card red">Red — India</span>
+      <span class="card green">Green — all other countries</span>
+      <span class="card contractor">Purple — contractors</span>
+    </p>
+
+    <div id="totals"></div>
+    <div id="filters"></div>
+    <div id="message" class="message"></div>
+    <div id="chart"></div>
+
+    <script type="module">
+      import { buildTree, countryBucket, managerList, positionRegionBreakdown, totals, visibleIds } from "./chart-logic.js";
+
+      const totalsDiv = document.getElementById("totals");
+      const filtersDiv = document.getElementById("filters");
+      const messageDiv = document.getElementById("message");
+      const chartDiv = document.getElementById("chart");
+
+      /** All employee-derived text reaches the DOM through textContent (AR-1.4). */
+      function element(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
+      }
+
+      function clear(node) {
+        node.replaceChildren();
+      }
+
+      /**
+       * FR-1.2: name, position, and country — country carries the colour's
+       * meaning as text.
+       *
+       * FR-2.5 (spec 005): an external-manager placeholder gets its own
+       * `card external` class and a single name div carrying the fixed
+       * "(not in imported data)" label as visible text — no position/country
+       * divs at all, since it has none.
+       *
+       * FR-1.1, AR-1.2 (spec 005): whenever `teamSizes` has a positive entry
+       * for this employee, an extra `[TeamSize: X]` div is appended, for both
+       * real and external cards alike.
+       */
+      function renderCard(employee, teamSizes) {
+        const card = employee.isExternal
+          ? element("div", "card external")
+          : employee.isContractor
+            ? element("div", "card contractor")
+            : element("div", `card ${countryBucket(employee.country)}`);
+
+        if (employee.isExternal) {
+          card.append(element("div", "name", `${employee.name} (not in imported data)`));
+        } else {
+          card.append(
+            element("div", "name", employee.name),
+            ...(employee.isContractor ? [element("div", "worker-type", "Contractor")] : []),
+            element("div", "position", employee.position),
+            element("div", "country", employee.country),
+          );
+        }
+
+        const size = teamSizes.get(employee.id);
+        if (size > 0) {
+          card.append(element("div", "team-size", `[TeamSize: ${size}]`));
+        }
+
+        return card;
+      }
+
+      /**
+       * FR-1.3, FR-1.5: the full tree, each manager's card acting as the header
+       * of the container holding their reports. AR-1.5: iterative — an explicit
+       * stack rather than recursion, so a pathologically deep chain renders
+       * instead of overflowing.
+       */
+      function renderChart(employees, visible) {
+        const { roots, childrenOf, teamSizes } = buildTree(employees);
+        clear(chartDiv);
+
+        const stack = [];
+        for (let i = roots.length - 1; i >= 0; i--) {
+          stack.push({ employee: roots[i], container: chartDiv });
+        }
+
+        while (stack.length > 0) {
+          const { employee, container } = stack.pop();
+          if (!visible.has(employee.id)) continue;
+
+          container.append(renderCard(employee, teamSizes));
+          const children = childrenOf.get(employee.id).filter((child) => visible.has(child.id));
+          if (children.length === 0) continue;
+
+          const team = element("div", "team");
+          container.append(team);
+          for (let i = children.length - 1; i >= 0; i--) {
+            stack.push({ employee: children[i], container: team });
+          }
+        }
+      }
+
+      /** spec 006 FR-3.4: the four data column headers, in fixed order -- three
+       *  colour-coded region buckets, labelled exactly as the legend above,
+       *  plus a plain Total column. */
+      const REGION_COLUMNS = [
+        { key: "blue", label: "Blue \u2014 UK & US" },
+        { key: "red", label: "Red \u2014 India" },
+        { key: "green", label: "Green \u2014 all other countries" },
+        { key: "purple", label: "Purple \u2014 contractors" },
+      ];
+
+      /**
+       * spec 003 FR-2.1, FR-2.2, FR-2.6 (the "Total headcount" heading, from
+       * `totals()`, unchanged); spec 006 FR-3.1-FR-3.4, AR-3.1, AR-3.2 (the
+       * position-by-region matrix, from `positionRegionBreakdown()`). All
+       * figures are recomputed from the same visible, non-external employee
+       * set on every filter change.
+       *
+       * FR-3.3: a band with no member positions is simply absent from
+       * `bands` (nothing to special-case here); when `bands` is `[]`
+       * entirely (D1: e.g. every manager unchecked on a payload whose only
+       * root is an external-manager placeholder), this renders just the
+       * header row and a totals row of zeroes, with no band rows and no
+       * extra message.
+       */
+      function renderTotals(visibleEmployees) {
+        const { headcount } = totals(visibleEmployees);
+        clear(totalsDiv);
+        totalsDiv.append(element("h2", null, `Total people: ${headcount}`));
+
+        const { bands, totals: bucketTotals } = positionRegionBreakdown(visibleEmployees);
+
+        const table = element("table");
+        const thead = element("thead");
+        const headerRow = element("tr");
+        headerRow.append(element("th", null, "Position"));
+        for (const column of REGION_COLUMNS) {
+          headerRow.append(element("th", `region-header ${column.key}`, column.label));
+        }
+        headerRow.append(element("th", null, "Total"));
+        thead.append(headerRow);
+        table.append(thead);
+
+        const tbody = element("tbody");
+        for (const { band, rows } of bands) {
+          const bandRow = element("tr");
+          const bandHeader = element("th", null, band);
+          bandHeader.colSpan = 6;
+          bandRow.append(bandHeader);
+          tbody.append(bandRow);
+
+          for (const row of rows) {
+            const tr = element("tr");
+            tr.append(
+              element("td", null, row.position),
+              element("td", null, String(row.blue)),
+              element("td", null, String(row.red)),
+              element("td", null, String(row.green)),
+              element("td", null, String(row.purple)),
+              element("td", null, String(row.total)),
+            );
+            tbody.append(tr);
+          }
+        }
+
+        const totalsRow = element("tr");
+        totalsRow.append(
+          element("th", null, "Totals"),
+          element("td", null, String(bucketTotals.blue)),
+          element("td", null, String(bucketTotals.red)),
+          element("td", null, String(bucketTotals.green)),
+          element("td", null, String(bucketTotals.purple)),
+          element("td", null, String(bucketTotals.total)),
+        );
+        tbody.append(totalsRow);
+
+        table.append(tbody);
+        totalsDiv.append(table);
+      }
+
+      function start(employees) {
+        const managers = managerList(employees);
+        // FR-2.3: all selected on load.
+        const selected = new Set(managers.map((manager) => manager.id));
+
+        function refresh() {
+          const visible = visibleIds(employees, selected);
+          const visibleEmployees = employees.filter((employee) => visible.has(employee.id));
+          // FR-2.6 (spec 005): external-manager placeholders aren't real
+          // headcount — `totals()` itself is unchanged, the filter lives here.
+          renderTotals(visibleEmployees.filter((employee) => !employee.isExternal));
+          renderChart(employees, visible);
+
+          // FR-2.7: only meaningful when there is something to deselect — on an
+          // all-root roster there are no checkboxes and the chart is complete.
+          const allDeselected = managers.length > 0 && selected.size === 0;
+          messageDiv.textContent = allDeselected
+            ? "No manager teams selected — showing employees who report to nobody."
+            : "";
+        }
+
+        // FR-2.3: the filter group is omitted entirely when nobody has reports.
+        clear(filtersDiv);
+        if (managers.length > 0) {
+          const fieldset = element("fieldset");
+          fieldset.append(element("legend", null, "Show teams"));
+          for (const manager of managers) {
+            const label = element("label");
+            const box = element("input");
+            box.type = "checkbox";
+            box.checked = true;
+            box.value = manager.id;
+            box.addEventListener("change", () => {
+              if (box.checked) selected.add(manager.id);
+              else selected.delete(manager.id);
+              refresh();
+            });
+            label.append(box, document.createTextNode(` ${manager.label}`));
+            fieldset.append(label, element("br"));
+          }
+          filtersDiv.append(fieldset);
+        }
+
+        refresh();
+      }
+
+      /** FR-1.8: never-imported is a distinct state from FR-3.4's load failure. */
+      function renderEmptyState() {
+        messageDiv.append(
+          element("span", null, "No employee data yet — "),
+          Object.assign(document.createElement("a"), {
+            href: "/",
+            textContent: "import a WorkDay report to get started.",
+          }),
+        );
+      }
+
+      try {
+        const response = await fetch("/api/headcount");
+        if (!response.ok) throw new Error(`Request failed (${response.status}).`);
+        const body = await response.json();
+        if (body.employees.length === 0) renderEmptyState();
+        else start(body.employees);
+      } catch {
+        // FR-3.4: one message for every cause — the only recourse is a reload —
+        // and the totals and filters are cleared so no stale or zero-derived
+        // number can be mistaken for a real one. The legend and nav stay.
+        clear(totalsDiv);
+        clear(filtersDiv);
+        clear(chartDiv);
+        messageDiv.textContent = "Could not load employee data. Reload the page to try again.";
+      }
+    </script>
+  </body>
+</html>
